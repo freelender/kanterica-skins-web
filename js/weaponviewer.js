@@ -119,6 +119,8 @@ function SyncStickerUIFromCurrentPreset() {
     const stickerselem = document.querySelector('.addons .stickers');
     if(!stickerselem) {return;}
 
+    let firstActiveSlot = null;
+
     for(let slot = 0; slot < 5; slot++) {
         const key = `weapon_sticker_${slot}`;
         const saved = (current[key] || '').split(';');
@@ -145,17 +147,26 @@ function SyncStickerUIFromCurrentPreset() {
         button.dataset.scale = saved[5] || STICKER_DEFAULT_SCALE;
         button.dataset.rotation = saved[6] || 0;
         button.title = stickerinfo.name;
-        button.innerHTML = `<img src="${stickerinfo.image}">`;
+        button.innerHTML = `<img src=\"${stickerinfo.image}\">`;
         ApplySticker(stickerinfo.image, slot);
+
+        if(firstActiveSlot === null) {
+            firstActiveSlot = slot;
+        }
+    }
+
+    if(firstActiveSlot !== null) {
+        SetActiveStickerSlot(firstActiveSlot);
     }
 }
 
 document.addEventListener('click', async function(e) {
-    if(e.target.tagName != 'BUTTON') {return;}
+    const targetBtn = e.target.closest('button');
+    if(!targetBtn) {return;}
 
     // Apply buttons
-    if(e.target.classList.contains('terror') ||
-    e.target.classList.contains('counter-terror')) {
+    if(targetBtn.classList.contains('terror') ||
+    targetBtn.classList.contains('counter-terror')) {
         ToggleLoading();
 
         const index = mainbox.dataset.index;
@@ -236,9 +247,9 @@ document.addEventListener('click', async function(e) {
         }
 
         let team = 0;
-        if(e.target.classList.contains('terror')) {
+        if(targetBtn.classList.contains('terror')) {
             team = 2;
-        }else if(e.target.classList.contains('counter-terror')) {
+        }else if(targetBtn.classList.contains('counter-terror')) {
             team = 3;
         }
 
@@ -310,19 +321,19 @@ document.addEventListener('click', async function(e) {
             }
 
             AddMessage('Skin saved', 'success', 10000);
-            e.target.classList.add('applied');
+            targetBtn.classList.add('applied');
         }catch(err) {
             AddMessage(`Error: ${err.name}<br>${err.message}`, 'fail', 10000);
         }
     }
 
     // Stickers
-    if(e.target.parentElement &&
-    e.target.parentElement.classList.contains('stickers')) {
-        const stickers = e.target.parentElement;
-        viewlistpos = Array.from(stickers.children).indexOf(e.target)+1;
+    if(targetBtn.parentElement &&
+    targetBtn.parentElement.classList.contains('stickers')) {
+        const stickers = targetBtn.parentElement;
+        viewlistpos = Array.from(stickers.children).indexOf(targetBtn)+1;
         SetActiveStickerSlot(viewlistpos-1);
-        viewlistselected = e.target.dataset.id;
+        viewlistselected = targetBtn.dataset.id;
         
         let title = `${viewselect.querySelector('.title').dataset.prefix} ${stickers.previousElementSibling.innerHTML}`;
         let search = `${viewselect.querySelector('input').dataset.prefix} ${stickers.previousElementSibling.innerHTML}`;
@@ -337,11 +348,11 @@ document.addEventListener('click', async function(e) {
     }
 
     // Keychains
-    if(e.target.parentElement &&
-    e.target.parentElement.classList.contains('keychains')) {
-        const keychains = e.target.parentElement;
-        viewlistpos = Array.from(keychains.children).indexOf(e.target)+1;
-        viewlistselected = e.target.dataset.id;
+    if(targetBtn.parentElement &&
+    targetBtn.parentElement.classList.contains('keychains')) {
+        const keychains = targetBtn.parentElement;
+        viewlistpos = Array.from(keychains.children).indexOf(targetBtn)+1;
+        viewlistselected = targetBtn.dataset.id;
 
         let title = `${viewselect.querySelector('.title').dataset.prefix} ${keychains.previousElementSibling.innerHTML}`;
         let search = `${viewselect.querySelector('input').dataset.prefix} ${keychains.previousElementSibling.innerHTML}`;
@@ -356,7 +367,7 @@ document.addEventListener('click', async function(e) {
     }
 
     // Return from viewselect
-    if(e.target.classList.contains('viewselect_return')) {
+    if(targetBtn.classList.contains('viewselect_return')) {
         viewselect.style.top = '100%';
         viewlistcurrent = false;
         viewlistpos = false;
@@ -369,10 +380,10 @@ document.addEventListener('click', async function(e) {
     }
 
     // Viewlist picked
-    if(e.target.dataset.action == 'viewlist_choose') {
-        const id = e.target.dataset.id;
+    if(targetBtn.dataset.action == 'viewlist_choose') {
+        const id = targetBtn.dataset.id;
 
-        if(!e.target.classList.contains('selected')) {
+        if(!targetBtn.classList.contains('selected')) {
             if(viewlistcurrent === 'stickers') {
                 let stickers = document.querySelector('.addons .stickers');
                 if(id != 0) {
@@ -426,6 +437,7 @@ document.addEventListener('click', async function(e) {
             viewselect.querySelector('.input input').value = null;
         }, 300);
     }
+
 });
 
 ///////////////
@@ -663,9 +675,6 @@ function getStickerTargetMesh(root) {
 function GetStickerPlacementIntersection(event) {
     if(!renderer || !camera || !model) {return null;}
 
-    const targetMesh = getStickerTargetMesh(model.scene);
-    if(!targetMesh) {return null;}
-
     const rect = renderer.domElement.getBoundingClientRect();
     if(rect.width === 0 || rect.height === 0) {return null;}
 
@@ -674,10 +683,23 @@ function GetStickerPlacementIntersection(event) {
 
     stickerRaycaster.setFromCamera(stickerPointer, camera);
 
-    const hit = stickerRaycaster.intersectObject(targetMesh, false)[0];
+    const hits = stickerRaycaster.intersectObject(model.scene, true);
+    if(!hits || hits.length < 1) {return null;}
+
+    const overlaySet = new Set(stickerspreview.filter(Boolean));
+    const hit = hits.find(h => {
+        if(!h.object || !h.object.isMesh) {return false;}
+        if(overlaySet.has(h.object)) {return false;}
+
+        const matName = (h.object.material?.name || '').toLowerCase();
+        if(matName.includes('scope') || matName.includes('bare_arm')) {return false;}
+
+        return true;
+    });
+
     if(!hit) {return null;}
 
-    return {hit, mesh: targetMesh};
+    return {hit, mesh: hit.object};
 }
 
 function UpdateActiveStickerPlacement(event) {
@@ -710,6 +732,7 @@ function UpdateActiveStickerPlacement(event) {
     if(chosen) {
         ApplySticker(chosen.image, activeStickerSlot);
     }
+
 }
 
 function HandleStickerPointerDown(event) {
@@ -761,6 +784,7 @@ function HandleStickerWheel(event) {
     if(chosen) {
         ApplySticker(chosen.image, activeStickerSlot);
     }
+
 }
 
 async function ApplySticker(imgsrc = '', place = 0) {
@@ -1206,6 +1230,7 @@ viewselect_search.addEventListener('input', function() {
         let searched = keychainslist.filter(keychain => keychain.name.toLowerCase().includes(viewselect_search.value.toLocaleLowerCase()));
         viewselect.querySelector('ul').innerHTML = GetHTMLTemplate(searched, viewlistselected);
     }
+
 });
 
 const settings = document.querySelector('#settings');
