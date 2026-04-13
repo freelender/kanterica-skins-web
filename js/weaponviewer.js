@@ -38,10 +38,14 @@ if(usethreejs && WebGL.isWebGL2Available() && canvasContainer
                 await LoadTexture(texturepath[0], texturepath[1]);
             }
 
+            SyncStickerUIFromCurrentPreset();
+
             document.querySelectorAll('.stickers button').forEach(function(elem, index) {
                 if(elem.dataset.id) {
                     let choosen = stickerslist.find(sticker => sticker.id == elem.dataset.id);
-                    ApplySticker(choosen.image, index);
+                    if(choosen) {
+                        ApplySticker(choosen.image, index);
+                    }
                 }
             });
             
@@ -1238,11 +1242,13 @@ const marks = settings.querySelectorAll('.marks input[type="radio"]');
 marks.forEach(elem => {
     elem.addEventListener('input', function() {
         let current = false;
-        if(elem.classList.contains('terrormark') && saved_t) {
+        if(elem.classList.contains('terrormark') && saved_t && saved_t !== '0') {
             current = JSON.parse(saved_t);
-        }else if(elem.classList.contains('counterterrormark') && saved_ct) {
+        }else if(elem.classList.contains('counterterrormark') && saved_ct && saved_ct !== '0') {
             current = JSON.parse(saved_ct);
         }
+
+        if(!current || typeof current !== 'object') {return;}
 
         const wear = document.querySelector('#wear');
         if(wear && current['weapon_wear'] != null) {
