@@ -10,7 +10,18 @@ import WebGL from 'three/addons/capabilities/WebGL.js';
 import ProjectedMaterial from 'https://unpkg.com/three-projected-material/build/ProjectedMaterial.module.js'
 
 let scene, renderer, controls, camera;
+let stickerslist = null, keychainslist = null;
+let stickersPromise = Promise.resolve();
 const canvasContainer = document.querySelector('#threejsArea');
+
+stickersPromise = fetch(Prefix+'src/data/stickers.json')
+.then(response => response.json())
+.then(stickers => stickerslist = stickers)
+.catch(() => stickerslist = []);
+fetch(Prefix+'src/data/keychains.json')
+.then(response => response.json())
+.then(keychains => keychainslist = keychains)
+.catch(() => keychainslist = []);
 
 if(usethreejs && WebGL.isWebGL2Available() && canvasContainer
 && modelpath) {
@@ -20,16 +31,21 @@ if(usethreejs && WebGL.isWebGL2Available() && canvasContainer
         ToggleLoading();
 
         (async () => {
+            await stickersPromise;
             await LoadModel(modelpath, legacy);
             
             if(texturepath && texturepath[0] && texturepath[1]) {
                 await LoadTexture(texturepath[0], texturepath[1]);
             }
 
+            SyncStickerUIFromCurrentPreset();
+
             document.querySelectorAll('.stickers button').forEach(function(elem, index) {
                 if(elem.dataset.id) {
                     let choosen = stickerslist.find(sticker => sticker.id == elem.dataset.id);
-                    ApplySticker(choosen.image, index);
+                    if(choosen) {
+                        ApplySticker(choosen.image, index);
+                    }
                 }
             });
             
@@ -43,14 +59,6 @@ if(usethreejs && WebGL.isWebGL2Available() && canvasContainer
     image.style.display = 'grid';
 }
 
-let stickerslist = null, keychainslist = null;
-fetch(Prefix+'src/data/stickers.json')
-.then(response => response.json())
-.then(stickers => stickerslist = stickers);
-fetch(Prefix+'src/data/keychains.json')
-.then(response => response.json())
-.then(keychains => keychainslist = keychains);
-
 /////////////
 // Buttons //
 /////////////
@@ -58,12 +66,111 @@ fetch(Prefix+'src/data/keychains.json')
 let viewlistcurrent = false, viewlistpos = false, viewlistselected = false;
 const viewselect = document.querySelector('#viewselect');
 const mainbox = document.querySelector('.mainbox');
+const STICKER_DEFAULT_SCALE = 2.7;
+const STICKER_DEFAULT_DISTANCE = 1;
+
+let activeStickerSlot = null;
+let isStickerDragging = false;
+
+const stickerRaycaster = new THREE.Raycaster();
+const stickerPointer = new THREE.Vector2();
+
+function StickerButtons() {
+    return document.querySelectorAll('.addons .stickers button');
+}
+
+function StickerButton(slot) {
+    const buttons = StickerButtons();
+
+    return buttons[slot] || null;
+}
+
+function SetActiveStickerSlot(slot) {
+    activeStickerSlot = slot;
+
+    StickerButtons().forEach((button, index) => {
+        if(index === slot) {
+            button.setAttribute('data-editing', 'true');
+        }else {
+            button.removeAttribute('data-editing');
+        }
+    });
+}
+
+function ClearStickerTransformAttributes(button) {
+    if(!button) {return;}
+
+    button.removeAttribute('data-schema');
+    button.removeAttribute('data-x');
+    button.removeAttribute('data-y');
+    button.removeAttribute('data-wear');
+    button.removeAttribute('data-scale');
+    button.removeAttribute('data-rotation');
+}
+
+function SyncStickerUIFromCurrentPreset() {
+    const presetIsT = document.querySelector('#preset .terrormark')?.checked;
+
+    let current = null;
+    if(presetIsT && saved_t && saved_t !== '0') {
+        current = JSON.parse(saved_t);
+    }else if(!presetIsT && saved_ct && saved_ct !== '0') {
+        current = JSON.parse(saved_ct);
+    }
+
+    if(!current || typeof current !== 'object') {return;}
+
+    const stickerselem = document.querySelector('.addons .stickers');
+    if(!stickerselem) {return;}
+
+    let firstActiveSlot = null;
+
+    for(let slot = 0; slot < 5; slot++) {
+        const key = `weapon_sticker_${slot}`;
+        const saved = (current[key] || '').split(';');
+        const button = stickerselem.children[slot];
+        if(!button) {continue;}
+
+        if((saved[0] || 0) == 0) {
+            button.removeAttribute('data-id');
+            button.removeAttribute('title');
+            button.innerHTML = '+';
+            ClearStickerTransformAttributes(button);
+            ApplySticker(false, slot);
+            continue;
+        }
+
+        const stickerinfo = stickerslist?.find(sticker => sticker.id == saved[0]);
+        if(!stickerinfo) {continue;}
+
+        button.dataset.id = saved[0];
+        button.dataset.schema = saved[1] || 0;
+        button.dataset.x = saved[2] || 0;
+        button.dataset.y = saved[3] || 0;
+        button.dataset.wear = saved[4] || 0;
+        button.dataset.scale = saved[5] || STICKER_DEFAULT_SCALE;
+        button.dataset.rotation = saved[6] || 0;
+        button.title = stickerinfo.name;
+        button.innerHTML = `<img src=\"${stickerinfo.image}\">`;
+        ApplySticker(stickerinfo.image, slot);
+
+        if(firstActiveSlot === null) {
+            firstActiveSlot = slot;
+        }
+    }
+
+    if(firstActiveSlot !== null) {
+        SetActiveStickerSlot(firstActiveSlot);
+    }
+}
+
 document.addEventListener('click', async function(e) {
-    if(e.target.tagName != 'BUTTON') {return;}
+    const targetBtn = e.target.closest('button');
+    if(!targetBtn) {return;}
 
     // Apply buttons
-    if(e.target.classList.contains('terror') ||
-    e.target.classList.contains('counter-terror')) {
+    if(targetBtn.classList.contains('terror') ||
+    targetBtn.classList.contains('counter-terror')) {
         ToggleLoading();
 
         const index = mainbox.dataset.index;
@@ -144,9 +251,9 @@ document.addEventListener('click', async function(e) {
         }
 
         let team = 0;
-        if(e.target.classList.contains('terror')) {
+        if(targetBtn.classList.contains('terror')) {
             team = 2;
-        }else if(e.target.classList.contains('counter-terror')) {
+        }else if(targetBtn.classList.contains('counter-terror')) {
             team = 3;
         }
 
@@ -218,18 +325,19 @@ document.addEventListener('click', async function(e) {
             }
 
             AddMessage('Skin saved', 'success', 10000);
-            e.target.classList.add('applied');
+            targetBtn.classList.add('applied');
         }catch(err) {
             AddMessage(`Error: ${err.name}<br>${err.message}`, 'fail', 10000);
         }
     }
 
     // Stickers
-    if(e.target.parentElement &&
-    e.target.parentElement.classList.contains('stickers')) {
-        const stickers = e.target.parentElement;
-        viewlistpos = Array.from(stickers.children).indexOf(e.target)+1;
-        viewlistselected = e.target.dataset.id;
+    if(targetBtn.parentElement &&
+    targetBtn.parentElement.classList.contains('stickers')) {
+        const stickers = targetBtn.parentElement;
+        viewlistpos = Array.from(stickers.children).indexOf(targetBtn)+1;
+        SetActiveStickerSlot(viewlistpos-1);
+        viewlistselected = targetBtn.dataset.id;
         
         let title = `${viewselect.querySelector('.title').dataset.prefix} ${stickers.previousElementSibling.innerHTML}`;
         let search = `${viewselect.querySelector('input').dataset.prefix} ${stickers.previousElementSibling.innerHTML}`;
@@ -244,11 +352,11 @@ document.addEventListener('click', async function(e) {
     }
 
     // Keychains
-    if(e.target.parentElement &&
-    e.target.parentElement.classList.contains('keychains')) {
-        const keychains = e.target.parentElement;
-        viewlistpos = Array.from(keychains.children).indexOf(e.target)+1;
-        viewlistselected = e.target.dataset.id;
+    if(targetBtn.parentElement &&
+    targetBtn.parentElement.classList.contains('keychains')) {
+        const keychains = targetBtn.parentElement;
+        viewlistpos = Array.from(keychains.children).indexOf(targetBtn)+1;
+        viewlistselected = targetBtn.dataset.id;
 
         let title = `${viewselect.querySelector('.title').dataset.prefix} ${keychains.previousElementSibling.innerHTML}`;
         let search = `${viewselect.querySelector('input').dataset.prefix} ${keychains.previousElementSibling.innerHTML}`;
@@ -263,7 +371,7 @@ document.addEventListener('click', async function(e) {
     }
 
     // Return from viewselect
-    if(e.target.classList.contains('viewselect_return')) {
+    if(targetBtn.classList.contains('viewselect_return')) {
         viewselect.style.top = '100%';
         viewlistcurrent = false;
         viewlistpos = false;
@@ -276,28 +384,36 @@ document.addEventListener('click', async function(e) {
     }
 
     // Viewlist picked
-    if(e.target.dataset.action == 'viewlist_choose') {
-        const id = e.target.dataset.id;
+    if(targetBtn.dataset.action == 'viewlist_choose') {
+        const id = targetBtn.dataset.id;
 
-        if(!e.target.classList.contains('selected')) {
+        if(!targetBtn.classList.contains('selected')) {
             if(viewlistcurrent === 'stickers') {
                 let stickers = document.querySelector('.addons .stickers');
                 if(id != 0) {
                     let choosen = stickerslist.find(sticker => sticker.id == id);
         
                     stickers.children[viewlistpos-1].dataset.id = id;
+                    stickers.children[viewlistpos-1].dataset.scale = STICKER_DEFAULT_SCALE;
+                    stickers.children[viewlistpos-1].dataset.wear = STICKER_DEFAULT_DISTANCE;
+                    stickers.children[viewlistpos-1].dataset.rotation = 0;
                     stickers.children[viewlistpos-1].title = choosen.name;
                     stickers.children[viewlistpos-1].innerHTML = `<img src="${choosen.image}">`;
+
+                    SetActiveStickerSlot(viewlistpos-1);
 
                     if(usethreejs) {
                         ApplySticker(choosen.image, viewlistpos-1);
                     }
                 }else {
                     stickers.children[viewlistpos-1].removeAttribute('data-id');
+                    stickers.children[viewlistpos-1].removeAttribute('data-editing');
                     stickers.children[viewlistpos-1].removeAttribute('title');
                     stickers.children[viewlistpos-1].innerHTML = '+';
+                    ClearStickerTransformAttributes(stickers.children[viewlistpos-1]);
 
                     ApplySticker(false, viewlistpos-1);
+                    activeStickerSlot = null;
                 }
             }else if(viewlistcurrent === 'keychains') {
                 let keychains = document.querySelector('.addons .keychains');
@@ -325,6 +441,7 @@ document.addEventListener('click', async function(e) {
             viewselect.querySelector('.input input').value = null;
         }, 300);
     }
+
 });
 
 ///////////////
@@ -342,6 +459,11 @@ function InitScene() {
     renderer.setAnimationLoop(animate);
 
     canvasContainer.append(renderer.domElement);
+
+    renderer.domElement.addEventListener('pointerdown', HandleStickerPointerDown);
+    renderer.domElement.addEventListener('pointermove', HandleStickerPointerMove);
+    window.addEventListener('pointerup', HandleStickerPointerUp);
+    renderer.domElement.addEventListener('wheel', HandleStickerWheel, { passive: false });
 
     window.addEventListener('resize', function(e) {
         boundingbox = canvasContainer.getBoundingClientRect();
@@ -552,6 +674,121 @@ function getStickerTargetMesh(root) {
   }
 
   return best;
+}
+
+function GetStickerPlacementIntersection(event) {
+    if(!renderer || !camera || !model) {return null;}
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    if(rect.width === 0 || rect.height === 0) {return null;}
+
+    stickerPointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    stickerPointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    stickerRaycaster.setFromCamera(stickerPointer, camera);
+
+    const hits = stickerRaycaster.intersectObject(model.scene, true);
+    if(!hits || hits.length < 1) {return null;}
+
+    const overlaySet = new Set(stickerspreview.filter(Boolean));
+    const hit = hits.find(h => {
+        if(!h.object || !h.object.isMesh) {return false;}
+        if(overlaySet.has(h.object)) {return false;}
+
+        const matName = (h.object.material?.name || '').toLowerCase();
+        if(matName.includes('scope') || matName.includes('bare_arm')) {return false;}
+
+        return true;
+    });
+
+    if(!hit) {return null;}
+
+    return {hit, mesh: hit.object};
+}
+
+function UpdateActiveStickerPlacement(event) {
+    if(activeStickerSlot === null) {return;}
+
+    const button = StickerButton(activeStickerSlot);
+    if(!button || !button.dataset.id) {return;}
+
+    const intersection = GetStickerPlacementIntersection(event);
+    if(!intersection) {return;}
+
+    const localPoint = intersection.mesh.worldToLocal(intersection.hit.point.clone());
+    const box = new THREE.Box3().setFromObject(intersection.mesh);
+    const size = box.getSize(new THREE.Vector3());
+
+    if(size.x === 0 || size.y === 0 || size.z === 0) {return;}
+
+    button.dataset.x = (localPoint.x / size.x).toFixed(6);
+    button.dataset.y = (localPoint.y / size.y).toFixed(6);
+    button.dataset.schema = (localPoint.z / size.z).toFixed(6);
+
+    if(!button.dataset.wear || Number(button.dataset.wear) <= 0) {
+        button.dataset.wear = STICKER_DEFAULT_DISTANCE;
+    }
+    if(!button.dataset.scale || Number(button.dataset.scale) <= 0) {
+        button.dataset.scale = STICKER_DEFAULT_SCALE;
+    }
+
+    const chosen = stickerslist?.find(sticker => sticker.id == button.dataset.id);
+    if(chosen) {
+        ApplySticker(chosen.image, activeStickerSlot);
+    }
+
+}
+
+function HandleStickerPointerDown(event) {
+    if(activeStickerSlot === null || event.button !== 0) {return;}
+
+    const button = StickerButton(activeStickerSlot);
+    if(!button || !button.dataset.id) {return;}
+
+    const intersection = GetStickerPlacementIntersection(event);
+    if(!intersection) {return;}
+
+    isStickerDragging = true;
+    controls.enabled = false;
+    UpdateActiveStickerPlacement(event);
+}
+
+function HandleStickerPointerMove(event) {
+    if(!isStickerDragging) {return;}
+
+    UpdateActiveStickerPlacement(event);
+}
+
+function HandleStickerPointerUp() {
+    if(!isStickerDragging) {return;}
+
+    isStickerDragging = false;
+    controls.enabled = true;
+}
+
+function HandleStickerWheel(event) {
+    if(activeStickerSlot === null || !event.shiftKey) {return;}
+
+    const button = StickerButton(activeStickerSlot);
+    if(!button || !button.dataset.id) {return;}
+
+    event.preventDefault();
+
+    let scale = Number(button.dataset.scale);
+    if(!Number.isFinite(scale) || scale <= 0) {
+        scale = STICKER_DEFAULT_SCALE;
+    }
+
+    scale += event.deltaY > 0 ? -0.1 : 0.1;
+    scale = Math.min(Math.max(scale, 0.6), 6);
+
+    button.dataset.scale = scale.toFixed(2);
+
+    const chosen = stickerslist?.find(sticker => sticker.id == button.dataset.id);
+    if(chosen) {
+        ApplySticker(chosen.image, activeStickerSlot);
+    }
+
 }
 
 async function ApplySticker(imgsrc = '', place = 0) {
@@ -838,7 +1075,20 @@ async function ApplySticker(imgsrc = '', place = 0) {
         offset = slotOffsets[mainbox.dataset.name][place];
     }
 
-    const surfacePoint = center.clone().add(new THREE.Vector3(offset.x, offset.y, 0));
+    const button = StickerButton(place);
+    const savedX = Number(button?.dataset.x);
+    const savedY = Number(button?.dataset.y);
+    const savedZ = Number(button?.dataset.schema);
+    const savedScale = Number(button?.dataset.scale);
+    const savedDistance = Number(button?.dataset.wear);
+
+    const hasCustomPlacement = Number.isFinite(savedDistance) && savedDistance > 0;
+
+    let surfacePoint = center.clone().add(new THREE.Vector3(offset.x, offset.y, 0));
+    if(hasCustomPlacement && Number.isFinite(savedX) && Number.isFinite(savedY) && Number.isFinite(savedZ)) {
+        const pointLocal = new THREE.Vector3(savedX * size.x, savedY * size.y, savedZ * size.z);
+        surfacePoint = mesh.localToWorld(pointLocal);
+    }
 
     let projector = stickerProjectors[place];
     if (!projector) {
@@ -848,7 +1098,7 @@ async function ApplySticker(imgsrc = '', place = 0) {
     }
 
     const normalDir = new THREE.Vector3(0, 0, 1);
-    const distance = offset.distance;
+    const distance = hasCustomPlacement ? size.z * savedDistance : offset.distance;
 
     const projPos = surfacePoint.clone().add(
         normalDir.clone().multiplyScalar(distance)
@@ -859,13 +1109,15 @@ async function ApplySticker(imgsrc = '', place = 0) {
     projector.updateProjectionMatrix();
     projector.updateMatrixWorld(true);
 
+    const textureScale = Number.isFinite(savedScale) && savedScale > 0 ? savedScale : STICKER_DEFAULT_SCALE;
+
     if(stickerspreview[place]) {
         const overlay = stickerspreview[place];
         const mat = overlay.material;
 
         mat.texture = stickerTex;
         mat.camera = projector;
-        mat.textureScale = mat.textureScale;
+        mat.textureScale = textureScale;
 
         mat.project(overlay);
 
@@ -875,7 +1127,7 @@ async function ApplySticker(imgsrc = '', place = 0) {
     const stickerMat = new ProjectedMaterial({
         camera: projector,
         texture: stickerTex,
-        textureScale: 2.7,
+        textureScale: textureScale,
         transparent: true,
         opacity: 1,
         backgroundOpacity: 0
@@ -982,6 +1234,7 @@ viewselect_search.addEventListener('input', function() {
         let searched = keychainslist.filter(keychain => keychain.name.toLowerCase().includes(viewselect_search.value.toLocaleLowerCase()));
         viewselect.querySelector('ul').innerHTML = GetHTMLTemplate(searched, viewlistselected);
     }
+
 });
 
 const settings = document.querySelector('#settings');
@@ -989,11 +1242,13 @@ const marks = settings.querySelectorAll('.marks input[type="radio"]');
 marks.forEach(elem => {
     elem.addEventListener('input', function() {
         let current = false;
-        if(elem.classList.contains('terrormark') && saved_t) {
+        if(elem.classList.contains('terrormark') && saved_t && saved_t !== '0') {
             current = JSON.parse(saved_t);
-        }else if(elem.classList.contains('counterterrormark') && saved_ct) {
+        }else if(elem.classList.contains('counterterrormark') && saved_ct && saved_ct !== '0') {
             current = JSON.parse(saved_ct);
         }
+
+        if(!current || typeof current !== 'object') {return;}
 
         const wear = document.querySelector('#wear');
         if(wear && current['weapon_wear'] != null) {
@@ -1049,12 +1304,13 @@ marks.forEach(elem => {
         const stickerselem = document.querySelector('.addons .stickers');
         if(stickerselem) {
             if(current['weapon_sticker_0']) {
-                let stickersaved = current['weapon_sticker_0'].split(';');
+                let stickersaved = (current['weapon_sticker_0'] || '').split(';');
                 
                 if(stickersaved[0] == 0) {
                     stickerselem.children[0].removeAttribute('data-id');
                     stickerselem.children[0].removeAttribute('title');
                     stickerselem.children[0].innerHTML = `+`;
+                    ClearStickerTransformAttributes(stickerselem.children[0]);
 
                     ApplySticker(false, 0);
                 }else {
@@ -1062,17 +1318,24 @@ marks.forEach(elem => {
 
                     stickerselem.children[0].dataset.id = stickersaved[0];
                     stickerselem.children[0].title = stickerinfo.name;
-                    stickerselem.children[0].innerHTML = `<img src="${stickerinfo.image}">`;
+                    stickerselem.children[0].innerHTML = `<img src=\"${stickerinfo.image}\">`;
+                    stickerselem.children[0].dataset.schema = stickersaved[1] || 0;
+                    stickerselem.children[0].dataset.x = stickersaved[2] || 0;
+                    stickerselem.children[0].dataset.y = stickersaved[3] || 0;
+                    stickerselem.children[0].dataset.wear = stickersaved[4] || 0;
+                    stickerselem.children[0].dataset.scale = stickersaved[5] || STICKER_DEFAULT_SCALE;
+                    stickerselem.children[0].dataset.rotation = stickersaved[6] || 0;
 
                     ApplySticker(stickerinfo.image, 0);
                 }
             }
             if(current['weapon_sticker_1']) {
-                let stickersaved = current['weapon_sticker_1'].split(';');
+                let stickersaved = (current['weapon_sticker_1'] || '').split(';');
                 if(stickersaved[0] == 0) {
                     stickerselem.children[1].removeAttribute('data-id');
                     stickerselem.children[1].removeAttribute('title');
                     stickerselem.children[1].innerHTML = `+`;
+                    ClearStickerTransformAttributes(stickerselem.children[1]);
 
                     ApplySticker(false, 1);
                 }else {
@@ -1080,17 +1343,24 @@ marks.forEach(elem => {
                     
                     stickerselem.children[1].dataset.id = stickersaved[0];
                     stickerselem.children[1].title = stickerinfo.name;
-                    stickerselem.children[1].innerHTML = `<img src="${stickerinfo.image}">`;
+                    stickerselem.children[1].innerHTML = `<img src=\"${stickerinfo.image}\">`;
+                    stickerselem.children[1].dataset.schema = stickersaved[1] || 0;
+                    stickerselem.children[1].dataset.x = stickersaved[2] || 0;
+                    stickerselem.children[1].dataset.y = stickersaved[3] || 0;
+                    stickerselem.children[1].dataset.wear = stickersaved[4] || 0;
+                    stickerselem.children[1].dataset.scale = stickersaved[5] || STICKER_DEFAULT_SCALE;
+                    stickerselem.children[1].dataset.rotation = stickersaved[6] || 0;
 
                     ApplySticker(stickerinfo.image, 1);
                 }
             }
             if(current['weapon_sticker_2']) {
-                let stickersaved = current['weapon_sticker_2'].split(';');
+                let stickersaved = (current['weapon_sticker_2'] || '').split(';');
                 if(stickersaved[0] == 0) {
                     stickerselem.children[2].removeAttribute('data-id');
                     stickerselem.children[2].removeAttribute('title');
                     stickerselem.children[2].innerHTML = `+`;
+                    ClearStickerTransformAttributes(stickerselem.children[2]);
 
                     ApplySticker(false, 2);
                 }else {
@@ -1098,17 +1368,24 @@ marks.forEach(elem => {
 
                     stickerselem.children[2].dataset.id = stickersaved[0];
                     stickerselem.children[2].title = stickerinfo.name;
-                    stickerselem.children[2].innerHTML = `<img src="${stickerinfo.image}">`;
+                    stickerselem.children[2].innerHTML = `<img src=\"${stickerinfo.image}\">`;
+                    stickerselem.children[2].dataset.schema = stickersaved[1] || 0;
+                    stickerselem.children[2].dataset.x = stickersaved[2] || 0;
+                    stickerselem.children[2].dataset.y = stickersaved[3] || 0;
+                    stickerselem.children[2].dataset.wear = stickersaved[4] || 0;
+                    stickerselem.children[2].dataset.scale = stickersaved[5] || STICKER_DEFAULT_SCALE;
+                    stickerselem.children[2].dataset.rotation = stickersaved[6] || 0;
 
                     ApplySticker(stickerinfo.image, 2);
                 }
             }
             if(current['weapon_sticker_3']) {
-                let stickersaved = current['weapon_sticker_3'].split(';');
+                let stickersaved = (current['weapon_sticker_3'] || '').split(';');
                 if(stickersaved[0] == 0) {
                     stickerselem.children[3].removeAttribute('data-id');
                     stickerselem.children[3].removeAttribute('title');
                     stickerselem.children[3].innerHTML = `+`;
+                    ClearStickerTransformAttributes(stickerselem.children[3]);
                 
                     ApplySticker(false, 3);
                 }else {
@@ -1116,17 +1393,24 @@ marks.forEach(elem => {
 
                     stickerselem.children[3].dataset.id = stickersaved[0];
                     stickerselem.children[3].title = stickerinfo.name;
-                    stickerselem.children[3].innerHTML = `<img src="${stickerinfo.image}">`;
-                
+                    stickerselem.children[3].innerHTML = `<img src=\"${stickerinfo.image}\">`;
+                    stickerselem.children[3].dataset.schema = stickersaved[1] || 0;
+                    stickerselem.children[3].dataset.x = stickersaved[2] || 0;
+                    stickerselem.children[3].dataset.y = stickersaved[3] || 0;
+                    stickerselem.children[3].dataset.wear = stickersaved[4] || 0;
+                    stickerselem.children[3].dataset.scale = stickersaved[5] || STICKER_DEFAULT_SCALE;
+                    stickerselem.children[3].dataset.rotation = stickersaved[6] || 0;
+
                     ApplySticker(stickerinfo.image, 3);
                 }
             }
             if(current['weapon_sticker_4']) {
-                let stickersaved = current['weapon_sticker_4'].split(';');
+                let stickersaved = (current['weapon_sticker_4'] || '').split(';');
                 if(stickersaved[0] == 0) {
                     stickerselem.children[4].removeAttribute('data-id');
                     stickerselem.children[4].removeAttribute('title');
                     stickerselem.children[4].innerHTML = `+`;
+                    ClearStickerTransformAttributes(stickerselem.children[4]);
                 
                     ApplySticker(false, 4);
                 }else {
@@ -1134,9 +1418,15 @@ marks.forEach(elem => {
 
                     stickerselem.children[4].dataset.id = stickersaved[0];
                     stickerselem.children[4].title = stickerinfo.name;
-                    stickerselem.children[4].innerHTML = `<img src="${stickerinfo.image}">`;
-                
-                    ApplySticker(false, 4);
+                    stickerselem.children[4].innerHTML = `<img src=\"${stickerinfo.image}\">`;
+                    stickerselem.children[4].dataset.schema = stickersaved[1] || 0;
+                    stickerselem.children[4].dataset.x = stickersaved[2] || 0;
+                    stickerselem.children[4].dataset.y = stickersaved[3] || 0;
+                    stickerselem.children[4].dataset.wear = stickersaved[4] || 0;
+                    stickerselem.children[4].dataset.scale = stickersaved[5] || STICKER_DEFAULT_SCALE;
+                    stickerselem.children[4].dataset.rotation = stickersaved[6] || 0;
+
+                    ApplySticker(stickerinfo.image, 4);
                 }
             }
         }
